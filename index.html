@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>高雄公車 (獨家配色版)</title>
+    
+    <link rel="shortcut icon" href="https://raw.githubusercontent.com/google/material-design-icons/master/png/maps/directions_bus/materialicons/24dp/1x/baseline_directions_bus_black_24dp.png" type="image/x-icon">
+
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Icons -->
+    <link href="https://fonts.googleapis.com/icon?family=Material+Icons+Outlined|Material+Icons+Round" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
+
+    <style>
+        /* 全域設定 */
+        body, html { height: 100%; margin: 0; overflow: hidden; font-family: 'Noto Sans TC', sans-serif; background: #f3f4f6; }
+        #map { height: 100%; width: 100%; z-index: 1; }
+
+        /* --- 新版公車圖示 (內圈實心+ICON，外圈細框) --- */
+        .bus-marker-ring {
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            
+            /* 外圈：由 border 實作，寬度 3px (細細的) */
+            border-style: solid;
+            border-width: 3px;
+            
+            /* 內圈：由 background-color 實作 */
+            
+            /* 陰影增加立體感 */
+            box-shadow: 0 3px 6px rgba(0,0,0,0.4);
+            
+            transition: transform 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            cursor: pointer;
+        }
+
+        /* Hover 放大效果 */
+        .bus-marker-ring:hover {
+            transform: scale(1.4);
+            z-index: 9999 !important; /* 確保浮在最上層 */
+            box-shadow: 0 6px 12px rgba(0,0,0,0.5);
+        }
+        
+        /* 資訊面板 */
+        #info-panel {
+            position: absolute;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 90%;
+            max-width: 400px;
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(8px);
+            padding: 16px;
+            border-radius: 24px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.15);
+            z-index: 1000;
+            display: none;
+            transition: all 0.3s;
+        }
+        #info-panel.show { display: block; animation: slideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1); }
+
+        /* 載入畫面 */
+        #loading-screen { position: fixed; inset: 0; background: rgba(255,255,255,0.98); z-index: 3000; display: flex; flex-direction: column; justify-content: center; align-items: center; transition: opacity 0.5s; pointer-events: none; }
+        #loading-screen.visible { pointer-events: auto; }
+        .loader { border: 4px solid #f3f3f3; border-top: 4px solid #2563eb; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        @keyframes slideUp { from { transform: translate(-50%, 100%); opacity: 0; } to { transform: translate(-50%, 0); opacity: 1; } }
+
+        /* 狀態列 */
+        #status-bar {
+            position: absolute;
+            top: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: white;
+            padding: 8px 16px;
+            border-radius: 99px;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.1);
+            z-index: 1000;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 14px;
+            font-weight: 500;
+            color: #475569;
+        }
+        .dot { width: 8px; height: 8px; background: #22c55e; border-radius: 50%; }
+        .dot.loading { background: #f59e0b; animation: pulse 1s infinite; }
+        
+        /* 面板上的識別證 */
+        .badge-preview {
+            width: 28px; height: 28px;
+            border-radius: 50%;
+            border: 3px solid transparent;
+            display: flex; justify-content: center; align-items: center;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="loading-screen" class="visible">
+        <div class="loader mb-4"></div>
+        <h2 class="text-xl font-bold text-slate-800">高雄公車即時地圖</h2>
+        <p id="loading-text" class="text-sm text-slate-500 mt-2">初始化中...</p>
+        <p class="text-xs text-slate-400 mt-4 px-4 text-center">每條路線皆為獨特配色</p>
+    </div>
+
+    <div id="status-bar">
+        <div id="status-dot" class="dot"></div>
+        <span id="status-text">準備中...</span>
+        <span id="bus-count" class="ml-2 font-bold text-blue-600">0</span> 輛公車
+    </div>
+
+    <div id="map"></div>
+
+    <div id="info-panel">
+        <div class="flex justify-between items-start mb-4">
+            <div>
+                <span class="text-xs font-bold text-slate-400 mb-1 block">路線</span>
+                <div class="flex items-center gap-2">
+                    <div id="panel-badge" class="badge-preview">
+                        <span class="material-icons-round text-white text-sm">directions_bus</span>
+                    </div>
+                    <span id="panel-route-text" class="text-2xl font-black text-slate-700"></span>
+                </div>
+            </div>
+            <button onclick="closePanel()" class="w-8 h-8 flex items-center justify-center rounded-full bg-slate-100 text-slate-500 hover:bg-slate-200 transition">
+                <span class="material-icons-round text-lg">close</span>
+            </button>
+        </div>
+        <div class="bg-slate-50 rounded-xl p-3 border border-slate-100">
+            <div class="flex items-center justify-between mb-2">
+                <span class="text-sm text-slate-500">車牌號碼</span>
+                <span id="panel-plate" class="font-mono font-bold text-lg text-slate-700"></span>
+            </div>
+            <div class="flex items-center justify-between">
+                <span class="text-sm text-slate-500">行駛方向</span>
+                <span id="panel-dir" class="font-medium text-slate-700"></span>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    
+    <script>
+        const CONFIG = {
+            IBUS_API: 'https://ibus.tbkc.gov.tw/ibus/graphql',
+            REFRESH_INTERVAL: 15000 
+        };
+
+        // 20 種高辨識度、高飽和度色票 (避開接近黑與白的顏色)
+        const PALETTE = [
+            '#ef4444', // 0: 鮮紅 (Red-500)
+            '#3b82f6', // 1: 亮藍 (Blue-500)
+            '#10b981', // 2: 翡翠綠 (Emerald-500)
+            '#f59e0b', // 3: 琥珀色 (Amber-500) - 取代黃色，避免太亮
+            '#8b5cf6', // 4: 鮮紫 (Violet-500)
+            '#06b6d4', // 5: 亮青 (Cyan-500)
+            '#ec4899', // 6: 亮粉 (Pink-500)
+            '#f97316', // 7: 鮮橘 (Orange-500)
+            '#6366f1', // 8: 靛藍 (Indigo-500)
+            '#84cc16', // 9: 萊姆綠 (Lime-500)
+            '#d946ef', // 10: 洋紅 (Fuchsia-500)
+            '#0d9488', // 11: 藍綠 (Teal-600)
+            '#b91c1c', // 12: 深紅 (Red-700)
+            '#1e40af', // 13: 深藍 (Blue-800)
+            '#a16207', // 14: 土黃/銅色 (Yellow-700)
+            '#7e22ce', // 15: 深紫 (Purple-700)
+            '#be185d', // 16: 深粉紅 (Pink-700)
+            '#c2410c', // 17: 鐵鏽橘 (Orange-700)
+            '#15803d', // 18: 森林綠 (Green-700)
+            '#0e7490'  // 19: 深青 (Cyan-700)
+        ];
+
+        const STATE = {
+            map: null,
+            busLayer: null,
+            routes: [], 
+            routeMap: {}, 
+            routeColorMap: {}, // 儲存每一條路線分配到的 {inner, outer}
+            activeBuses: {},
+            timer: null,
+            isFetching: false
+        };
+
+        window.onload = async () => {
+            initMap();
+            try {
+                updateLoading('正在下載路線並分配專屬顏色...', 10);
+                await fetchAllRoutes();
+                
+                updateLoading('正在定位公車...', 30);
+                await updateBusLocations(); 
+                
+                STATE.timer = setInterval(updateBusLocations, CONFIG.REFRESH_INTERVAL);
+                
+                const loading = document.getElementById('loading-screen');
+                loading.style.opacity = '0';
+                setTimeout(() => loading.remove(), 500);
+            } catch (e) {
+                console.error(e);
+                let msg = '資料載入失敗';
+                if (e.message.includes('NetworkError') || e.message.includes('Failed to fetch')) {
+                    msg = '連線失敗 (可能被CORS阻擋)';
+                } else {
+                    msg = `錯誤: ${e.message}`;
+                }
+                document.getElementById('loading-text').innerText = msg;
+                document.getElementById('loading-text').classList.add('text-red-500', 'font-bold');
+            }
+        };
+
+        function initMap() {
+            STATE.map = L.map('map', { 
+                zoomControl: false,
+                preferCanvas: true 
+            }).setView([22.6314, 120.3019], 13);
+
+            L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+                maxZoom: 19,
+                attribution: '&copy; OpenStreetMap &copy; CARTO'
+            }).addTo(STATE.map);
+            
+            STATE.busLayer = L.layerGroup().addTo(STATE.map);
+            STATE.map.on('click', closePanel);
+        }
+
+        async function fetchGraphQL(payload) {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 30000); 
+            
+            try {
+                const res = await fetch(CONFIG.IBUS_API, {
+                    method: 'POST',
+                    headers: { 
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json'
+                    },
+                    body: JSON.stringify(payload),
+                    signal: controller.signal
+                });
+                clearTimeout(timeoutId);
+                if (!res.ok) throw new Error(`HTTP Error: ${res.status}`);
+                return await res.json();
+            } catch (err) {
+                clearTimeout(timeoutId);
+                throw err;
+            }
+        }
+
+        async function fetchAllRoutes() {
+            const query = `{ routes(lang: "zh") { edges { node { id name } } } }`;
+            const data = await fetchGraphQL({ query });
+            if (data && data.data && data.data.routes) {
+                // 1. 取得所有路線資料
+                let rawRoutes = data.data.routes.edges.map(e => e.node);
+                
+                // 2. 依照「路線名稱」進行自然排序 (避免 100 排在 2 前面)
+                rawRoutes.sort((a, b) => {
+                    return a.name.localeCompare(b.name, 'zh-TW', { numeric: true });
+                });
+
+                STATE.routes = rawRoutes;
+                const N_COLORS = PALETTE.length; // 20
+
+                // 3. 依序分配顏色 (嚴格排序，不依賴雜湊，保證不重複)
+                STATE.routes.forEach((r, index) => {
+                    STATE.routeMap[r.id] = r.name;
+                    
+                    // 算法：
+                    // 外圈顏色：每 20 條路線換一種
+                    // 內圈顏色：每 1 條路線換一種 (循環)
+                    
+                    const outerIndex = Math.floor(index / N_COLORS) % N_COLORS;
+                    const innerIndex = index % N_COLORS;
+                    
+                    STATE.routeColorMap[r.id] = {
+                        outer: PALETTE[outerIndex],
+                        inner: PALETTE[innerIndex]
+                    };
+                });
+
+                console.log(`已處理 ${STATE.routes.length} 條路線，顏色分配完成`);
+            }
+        }
+
+        async function updateBusLocations() {
+            if (STATE.isFetching || STATE.routes.length === 0) return;
+            STATE.isFetching = true;
+            
+            document.getElementById('status-dot').classList.add('loading');
+            document.getElementById('status-text').innerText = '掃描中...';
+
+            const validRouteIds = STATE.routes.filter(r => !isNaN(parseInt(r.id))).map(r => r.id);
+
+            try {
+                // One-Shot Query: 一次請求所有公車
+                const allAliases = validRouteIds.map(id => {
+                    return `r_${id}: route(xno: ${id}, lang: "zh") {
+                        buses { edges { goBack node { id lat lon } } }
+                    }`;
+                }).join('\n');
+
+                const query = `query { ${allAliases} }`;
+                const res = await fetchGraphQL({ query });
+                
+                const activeVehiclesData = [];
+                if (res.data) {
+                    Object.keys(res.data).forEach(key => {
+                        const routeId = key.replace('r_', '');
+                        const routeName = STATE.routeMap[routeId] || routeId;
+                        const routeData = res.data[key];
+
+                        if (routeData && routeData.buses && routeData.buses.edges) {
+                            routeData.buses.edges.forEach(edge => {
+                                const bus = edge.node;
+                                if (bus && bus.lat && bus.lon) {
+                                    activeVehiclesData.push({
+                                        plate: bus.id,
+                                        lat: bus.lat,
+                                        lon: bus.lon,
+                                        dir: edge.goBack,
+                                        routeId: routeId,
+                                        routeName: routeName
+                                    });
+                                }
+                            });
+                        }
+                    });
+                }
+
+                renderBuses(activeVehiclesData);
+                document.getElementById('status-text').innerText = `更新: ${new Date().toLocaleTimeString()}`;
+                document.getElementById('bus-count').innerText = activeVehiclesData.length;
+
+            } catch (err) {
+                console.error("Update Failed", err);
+                document.getElementById('status-text').innerText = '更新失敗';
+            } finally {
+                STATE.isFetching = false;
+                document.getElementById('status-dot').classList.remove('loading');
+            }
+        }
+
+        // 取得顏色
+        function getRouteColors(routeId) {
+            return STATE.routeColorMap[routeId] || { outer: '#94a3b8', inner: '#cbd5e1' };
+        }
+
+        function renderBuses(vehicles) {
+            const currentPlates = new Set();
+
+            vehicles.forEach(v => {
+                currentPlates.add(v.plate);
+                
+                if (STATE.activeBuses[v.plate]) {
+                    const marker = STATE.activeBuses[v.plate];
+                    const oldLatLng = marker.getLatLng();
+                    if (oldLatLng.lat !== v.lat || oldLatLng.lng !== v.lon) {
+                        marker.setLatLng([v.lat, v.lon]);
+                        // 位置更新動畫
+                        const iconEl = marker.getElement();
+                        if (iconEl) {
+                            iconEl.style.transition = 'transform 0.5s linear';
+                        }
+                    }
+                    marker.busData = v; 
+                } else {
+                    const colors = getRouteColors(v.routeId);
+                    
+                    const marker = L.marker([v.lat, v.lon], {
+                        icon: L.divIcon({
+                            className: '', 
+                            html: `
+                                <div class="bus-marker-ring" style="background-color: ${colors.inner}; border-color: ${colors.outer};">
+                                    <span class="material-icons-round text-white" style="font-size:18px; text-shadow: 0 1px 2px rgba(0,0,0,0.3);">directions_bus</span>
+                                </div>
+                            `,
+                            iconSize: [32, 32],
+                            iconAnchor: [16, 16]
+                        })
+                    });
+                    
+                    marker.busData = v;
+                    marker.on('click', (e) => {
+                        L.DomEvent.stopPropagation(e);
+                        showBusInfo(v);
+                    });
+                    
+                    STATE.busLayer.addLayer(marker);
+                    STATE.activeBuses[v.plate] = marker;
+                }
+            });
+
+            Object.keys(STATE.activeBuses).forEach(plate => {
+                if (!currentPlates.has(plate)) {
+                    STATE.busLayer.removeLayer(STATE.activeBuses[plate]);
+                    delete STATE.activeBuses[plate];
+                }
+            });
+        }
+
+        function showBusInfo(data) {
+            const panel = document.getElementById('info-panel');
+            
+            const colors = getRouteColors(data.routeId);
+            const badgeIcon = document.getElementById('panel-badge');
+            
+            // 設定面板上的預覽圖示
+            badgeIcon.style.backgroundColor = colors.inner;
+            badgeIcon.style.borderColor = colors.outer;
+            
+            document.getElementById('panel-route-text').innerText = data.routeName;
+            document.getElementById('panel-plate').innerText = data.plate;
+            
+            let dirText = '未知';
+            if (data.dir === 1) dirText = '去程';
+            else if (data.dir === 2) dirText = '返程 / 迴圈';
+            
+            document.getElementById('panel-dir').innerText = dirText;
+            panel.classList.add('show');
+            
+            // 已移除 setView (點擊不移動地圖)
+        }
+
+        function closePanel() {
+            document.getElementById('info-panel').classList.remove('show');
+        }
+
+        function updateLoading(text, percent) {
+            const el = document.getElementById('loading-text');
+            if (el) el.innerText = text;
+        }
+
+    </script>
+</body>
+</html>
